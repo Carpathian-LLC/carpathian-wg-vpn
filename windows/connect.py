@@ -7,21 +7,19 @@
 # File: windows/connect.py
 # ------------------------------------------------------------------------------------
 # Notes:
-# - Lightweight WireGuard TUI for Windows.
+# - Lightweight WireGuard TUI for Windows. Standard library only (msvcrt + ANSI).
 # - Usage: python connect.py [config_name]   (run from an Administrator terminal)
 # - Configs are auto-discovered from ..\configs\*.conf
-# - Requires: pip install windows-curses
 # ------------------------------------------------------------------------------------
 
-# Imports:
-import curses
-import subprocess
-import time
-import sys
-import re
 import os
+import re
+import sys
+import time
 import ctypes
+import msvcrt
 import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -56,38 +54,77 @@ def is_admin():
         return False
 
 # ------------------------------------------------------------------------------------
-# Carpathian palette and curses colour pairs
+# ANSI colours and terminal control (Windows 10+ after enable_vt_mode)
 # ------------------------------------------------------------------------------------
-# Brand hex: blue #1B8FF2, pink #F11C6B, green #22C55E, red #EF4444, amber #EAB308, fg #EDEDED
 
-C_HEADER, C_UP, C_DOWN, C_DIM, C_ACCENT, C_KEY, C_BORDER, C_TITLE = range(1, 9)
+ESC = "\x1b["
+RESET    = ESC + "0m"
+BOLD     = ESC + "1m"
+DIM      = ESC + "2m"
+FG_RED   = ESC + "31m"
+FG_GREEN = ESC + "32m"
+FG_YELLOW= ESC + "33m"
+FG_CYAN  = ESC + "36m"
+FG_WHITE = ESC + "97m"   # bright white
+BG_BLUE  = ESC + "44m"
+CLEAR    = ESC + "2J"
+HOME     = ESC + "H"
+CLR_LINE = ESC + "K"
+CLR_DOWN = ESC + "J"
+HIDE_CUR = ESC + "?25l"
+SHOW_CUR = ESC + "?25h"
 
-def init_colors():
-    curses.start_color()
-    curses.use_default_colors()
-    blue, pink, green, red, amber, fg = (
-        curses.COLOR_BLUE, curses.COLOR_MAGENTA, curses.COLOR_GREEN,
-        curses.COLOR_RED, curses.COLOR_YELLOW, curses.COLOR_WHITE,
-    )
-    if curses.can_change_color() and curses.COLORS >= 256:
-        scale = lambda r, g, b: (r*1000//255, g*1000//255, b*1000//255)
-        for idx, rgb in [(16, (0x1B, 0x8F, 0xF2)), (17, (0xF1, 0x1C, 0x6B)),
-                         (18, (0x22, 0xC5, 0x5E)), (19, (0xEF, 0x44, 0x44)),
-                         (20, (0xEA, 0xB3, 0x08)), (21, (0xED, 0xED, 0xED))]:
-            curses.init_color(idx, *scale(*rgb))
-        blue, pink, green, red, amber, fg = 16, 17, 18, 19, 20, 21
-    curses.init_pair(C_HEADER, curses.COLOR_WHITE, blue)
-    curses.init_pair(C_UP,     green, -1)
-    curses.init_pair(C_DOWN,   red,   -1)
-    curses.init_pair(C_DIM,    fg,    -1)
-    curses.init_pair(C_ACCENT, blue,  -1)
-    curses.init_pair(C_KEY,    amber, -1)
-    curses.init_pair(C_BORDER, blue,  -1)
-    curses.init_pair(C_TITLE,  pink,  -1)
+def goto(y, x):
+    return f"{ESC}{y+1};{x+1}H"
+
+def enable_vt_mode():
+    """Turn on ANSI escape processing on the Windows console."""
+    try:
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        mode = ctypes.c_ulong()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            # 0x4 = ENABLE_VIRTUAL_TERMINAL_PROCESSING
+            kernel32.SetConsoleMode(handle, mode.value | 0x4)
+    except Exception:
+        pass
+
+def term_size():
+    s = shutil.get_terminal_size((80, 24))
+    return s.lines, s.columns
+
+# ------------------------------------------------------------------------------------
+# Keyboard input (non-blocking, with timeout)
+# ------------------------------------------------------------------------------------
+
+def read_key(timeout_sec):
+    """Poll for a keypress for up to timeout_sec. Returns:
+       ('char', b'x') | ('arrow', 'up'/'down') | ('enter',) | None
+    """
+    end = time.monotonic() + timeout_sec
+    while time.monotonic() < end:
+        if msvcrt.kbhit():
+            ch = msvcrt.getch()
+            if ch in (b'\x00', b'\xe0'):
+                ch2 = msvcrt.getch()
+                arrows = {b'H': 'up', b'P': 'down', b'K': 'left', b'M': 'right'}
+                return ('arrow', arrows.get(ch2))
+            if ch in (b'\r', b'\n'):
+                return ('enter',)
+            return ('char', ch)
+        time.sleep(0.02)
+    return None
+
+# ------------------------------------------------------------------------------------
+# WireGuard helpers
+# ------------------------------------------------------------------------------------
+
+_NO_WINDOW = 0x08000000
 
 def run(cmd):
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=8,
+                           creationflags=_NO_WINDOW)
         return r.stdout.strip(), r.stderr.strip(), r.returncode
     except Exception as e:
         return "", str(e), 1
@@ -97,47 +134,22 @@ def list_configs():
         return []
     return sorted(p.stem for p in CONFIG_DIR.glob("*.conf") if p.stem != "example")
 
-def pick_config(stdscr, names):
-    curses.curs_set(0)
-    idx = 0
-    while True:
-        stdscr.erase()
-        h, w = stdscr.getmaxyx()
-        stdscr.addstr(0, 0, " CARPATHIAN - WireGuard - select config ".ljust(w),
-                      curses.color_pair(C_HEADER) | curses.A_BOLD)
-        for i, n in enumerate(names):
-            attr = curses.color_pair(C_ACCENT) | curses.A_BOLD if i == idx else curses.color_pair(C_DIM)
-            prefix = "> " if i == idx else "  "
-            try: stdscr.addstr(2 + i, 2, prefix + n, attr)
-            except curses.error: pass
-        try: stdscr.addstr(h - 2, 2, "[up/down] move   [enter] select   [q] quit", curses.color_pair(C_DIM))
-        except curses.error: pass
-        stdscr.refresh()
-        k = stdscr.getch()
-        if k in (curses.KEY_UP, ord('k')):
-            idx = (idx - 1) % len(names)
-        elif k in (curses.KEY_DOWN, ord('j')):
-            idx = (idx + 1) % len(names)
-        elif k in (curses.KEY_ENTER, 10, 13):
-            return names[idx]
-        elif k in (ord('q'), ord('Q')):
-            return None
-
-def get_active_iface(config_name):
-    """On Windows, the interface name matches the tunnel service name (config stem)."""
+def get_active_interfaces():
+    """Return the names of currently active WireGuard tunnel interfaces."""
     out, _, rc = run([WG, "show", "interfaces"])
     if rc == 0 and out.strip():
-        ifaces = out.strip().split()
-        if config_name in ifaces:
-            return config_name
-        return ifaces[0] if ifaces else None
-    return None
+        return out.strip().split()
+    return []
+
+def get_active_iface(config_name):
+    return config_name if config_name in get_active_interfaces() else None
 
 def is_up(config_name):
     return get_active_iface(config_name) is not None
 
-def get_wg_stats(config_name):
-    iface = get_active_iface(config_name)
+def get_wg_stats(config_name, iface=None):
+    if iface is None:
+        iface = get_active_iface(config_name)
     stats = {
         "interface": iface or config_name,
         "public_key": "-", "listen_port": "-", "peer": "-",
@@ -184,7 +196,7 @@ def fmt_bytes(b):
     return f"{int(b)} B"
 
 def truncate(s, n):
-    return s if len(s) <= n else s[:n-1] + "..."
+    return s if len(s) <= n else s[:max(1, n-1)] + "..."
 
 def toggle_tunnel(config_name, config_path, currently_up):
     if currently_up:
@@ -201,153 +213,220 @@ def toggle_tunnel(config_name, config_path, currently_up):
 # Drawing helpers
 # ------------------------------------------------------------------------------------
 
-def hline(win, y, x, w, ch="-"):
-    try: win.addstr(y, x, ch * w, curses.color_pair(C_BORDER))
-    except curses.error: pass
+def write(*parts):
+    sys.stdout.write("".join(parts))
 
-def box(win, y, x, h, w):
-    try:
-        win.addstr(y,     x, "+" + "-"*(w-2) + "+", curses.color_pair(C_BORDER))
-        win.addstr(y+h-1, x, "+" + "-"*(w-2) + "+", curses.color_pair(C_BORDER))
-        for i in range(1, h-1):
-            win.addstr(y+i, x,     "|", curses.color_pair(C_BORDER))
-            win.addstr(y+i, x+w-1, "|", curses.color_pair(C_BORDER))
-    except curses.error: pass
+def flush():
+    sys.stdout.flush()
 
-def label(win, y, x, key, val, maxw=40):
+def put(y, x, s):
+    """Returns a single positioned string; callers concat and flush once per frame."""
+    return goto(y, x) + s
+
+def box(y, x, h, w):
+    parts = [put(y, x, DIM + "+" + "-"*(w-2) + "+" + RESET)]
+    for i in range(1, h-1):
+        parts.append(put(y+i, x,     DIM + "|" + RESET))
+        parts.append(put(y+i, x+w-1, DIM + "|" + RESET))
+    parts.append(put(y+h-1, x, DIM + "+" + "-"*(w-2) + "+" + RESET))
+    return "".join(parts)
+
+def label(y, x, key, val, maxw):
+    v = truncate(str(val), maxw - len(key))
+    return put(y, x, DIM + key + RESET + FG_CYAN + v + RESET)
+
+# ------------------------------------------------------------------------------------
+# Config picker
+# ------------------------------------------------------------------------------------
+
+def pick_config(names, active=frozenset()):
+    idx = 0
+    write(HIDE_CUR, CLEAR, HOME)
+    flush()
     try:
-        win.addstr(y, x, key, curses.color_pair(C_DIM))
-        win.addstr(y, x+len(key), truncate(str(val), maxw - len(key)),
-                   curses.color_pair(C_ACCENT))
-    except curses.error: pass
+        while True:
+            rows, cols = term_size()
+            header = " CARPATHIAN - WireGuard - select config "
+            header_padded = header + " " * max(0, cols - len(header))
+            frame = [HOME, BG_BLUE + FG_WHITE + BOLD + header_padded + RESET, CLR_LINE]
+            for i, n in enumerate(names):
+                badge = (FG_GREEN + "  [active]" + RESET) if n in active else ""
+                if i == idx:
+                    frame.append(put(2 + i, 2, FG_CYAN + BOLD + "> " + n + RESET + badge + CLR_LINE))
+                else:
+                    frame.append(put(2 + i, 2, DIM + "  " + n + RESET + badge + CLR_LINE))
+            frame.append(put(rows - 2, 2, DIM + "[up/down] move   [enter] select   [q] quit" + RESET + CLR_LINE))
+            frame.append(CLR_DOWN)
+            write(*frame)
+            flush()
+
+            k = read_key(3600)
+            if k is None:
+                continue
+            if k[0] == 'arrow':
+                if k[1] == 'up':   idx = (idx - 1) % len(names)
+                elif k[1] == 'down': idx = (idx + 1) % len(names)
+            elif k[0] == 'enter':
+                return names[idx]
+            elif k[0] == 'char':
+                c = k[1].lower()
+                if c in (b'q',): return None
+                if c == b'k': idx = (idx - 1) % len(names)
+                if c == b'j': idx = (idx + 1) % len(names)
+    finally:
+        write(SHOW_CUR, RESET)
+        flush()
 
 # ------------------------------------------------------------------------------------
 # Main TUI loop
 # ------------------------------------------------------------------------------------
 
-def tui(stdscr, config_name, config_path):
-    init_colors()
-    curses.curs_set(0)
-    stdscr.nodelay(True)
-    stdscr.timeout(int(REFRESH_HZ * 1000))
+def tui(config_name, config_path):
+    write(HIDE_CUR, CLEAR, HOME)
+    flush()
 
     status_msg, status_good = "", True
     up, stats = False, {}
+    last_refresh = 0.0
+    redraw_deadline = 1.0 / REFRESH_HZ
 
-    while True:
-        h, w = stdscr.getmaxyx()
-        stdscr.erase()
+    try:
+        while True:
+            # Refresh stats at REFRESH_HZ.
+            now = time.monotonic()
+            if now - last_refresh >= redraw_deadline:
+                iface = config_name if config_name in get_active_interfaces() else None
+                up = iface is not None
+                stats = get_wg_stats(config_name, iface=iface) if up else {}
+                last_refresh = now
 
-        title = f" CARPATHIAN - WireGuard - {config_name} "
-        stdscr.addstr(0, 0, title.ljust(w), curses.color_pair(C_HEADER) | curses.A_BOLD)
-        ts = datetime.now().strftime("%H:%M:%S")
-        try: stdscr.addstr(0, w - len(ts) - 1, ts, curses.color_pair(C_HEADER))
-        except curses.error: pass
+            rows, cols = term_size()
+            frame = [HOME]
 
-        if up:
-            badge, bcolor = " * CONNECTED ", curses.color_pair(C_UP) | curses.A_BOLD
-        else:
-            badge, bcolor = " o DISCONNECTED ", curses.color_pair(C_DOWN) | curses.A_BOLD
-        try: stdscr.addstr(2, 2, badge, bcolor)
-        except curses.error: pass
+            # Header
+            title = f" CARPATHIAN - WireGuard - {config_name} "
+            title_padded = title + " " * max(0, cols - len(title))
+            frame.append(BG_BLUE + FG_WHITE + BOLD + title_padded + RESET + CLR_LINE)
+            ts = datetime.now().strftime("%H:%M:%S")
+            frame.append(put(0, max(0, cols - len(ts) - 1), BG_BLUE + FG_WHITE + ts + RESET))
 
-        row = 4
-        if up and stats:
-            bw = min(w - 4, 72)
-            box(stdscr, row, 2, 7, bw)
-            try: stdscr.addstr(row, 4, " Connection ", curses.color_pair(C_ACCENT) | curses.A_BOLD)
-            except curses.error: pass
-            label(stdscr, row+1, 4, "Interface  : ", config_name, bw-6)
-            label(stdscr, row+2, 4, "Endpoint   : ", stats.get("endpoint","-"), bw-6)
-            label(stdscr, row+3, 4, "Allowed IPs: ", stats.get("allowed_ips","-"), bw-6)
-            label(stdscr, row+4, 4, "Handshake  : ", stats.get("latest_handshake") or "-", bw-6)
-            label(stdscr, row+5, 4, "Pub key    : ", truncate(stats.get("public_key","-"), 38), bw-6)
-            row += 8
+            # Status badge
+            if up:
+                frame.append(put(2, 2, FG_GREEN + BOLD + " * CONNECTED " + RESET + CLR_LINE))
+            else:
+                frame.append(put(2, 2, FG_RED + BOLD + " o DISCONNECTED " + RESET + CLR_LINE))
 
-            box(stdscr, row, 2, 4, bw)
-            try: stdscr.addstr(row, 4, " Traffic ", curses.color_pair(C_ACCENT) | curses.A_BOLD)
-            except curses.error: pass
-            rx, tx = stats.get("rx_bytes", 0), stats.get("tx_bytes", 0)
-            try:
-                stdscr.addstr(row+1, 4, "RX  ", curses.color_pair(C_UP) | curses.A_BOLD)
-                stdscr.addstr(fmt_bytes(rx).ljust(14), curses.color_pair(C_ACCENT))
-                stdscr.addstr("  TX  ", curses.color_pair(C_DOWN) | curses.A_BOLD)
-                stdscr.addstr(fmt_bytes(tx), curses.color_pair(C_ACCENT))
-            except curses.error: pass
-            row += 6
-        else:
-            try: stdscr.addstr(row, 4, "No active tunnel. Press [c] to connect.", curses.color_pair(C_DIM))
-            except curses.error: pass
-            row += 2
+            # Clear rows between badge and body
+            frame.append(put(3, 0, CLR_LINE))
 
-        if status_msg:
-            color = curses.color_pair(C_UP) if status_good else curses.color_pair(C_DOWN)
-            try: stdscr.addstr(row, 2, f"  {status_msg}", color)
-            except curses.error: pass
-            row += 1
+            row = 4
+            if up and stats:
+                bw = min(cols - 4, 72)
+                frame.append(box(row, 2, 7, bw))
+                frame.append(put(row, 4, FG_CYAN + BOLD + " Connection " + RESET))
+                frame.append(label(row+1, 4, "Interface  : ", config_name,                       bw-6))
+                frame.append(label(row+2, 4, "Endpoint   : ", stats.get("endpoint","-"),         bw-6))
+                frame.append(label(row+3, 4, "Allowed IPs: ", stats.get("allowed_ips","-"),      bw-6))
+                frame.append(label(row+4, 4, "Handshake  : ", stats.get("latest_handshake") or "-", bw-6))
+                frame.append(label(row+5, 4, "Pub key    : ", truncate(stats.get("public_key","-"), 38), bw-6))
+                row += 8
 
-        footer_y = h - 2
-        keys = [("[c]", "connect" if not up else "disconnect"), ("[r]", "refresh"), ("[q]", "quit")]
-        fx = 2
-        for k, desc in keys:
-            try:
-                stdscr.addstr(footer_y, fx, k, curses.color_pair(C_KEY) | curses.A_BOLD)
-                stdscr.addstr(f" {desc}  ", curses.color_pair(C_DIM))
-                fx += len(k) + len(desc) + 3
-            except curses.error: pass
-        hline(stdscr, footer_y - 1, 0, w)
-        stdscr.refresh()
+                frame.append(box(row, 2, 4, bw))
+                frame.append(put(row, 4, FG_CYAN + BOLD + " Traffic " + RESET))
+                rx, tx = stats.get("rx_bytes", 0), stats.get("tx_bytes", 0)
+                frame.append(put(row+1, 4,
+                    FG_GREEN + BOLD + "RX  " + RESET +
+                    FG_CYAN + fmt_bytes(rx).ljust(14) + RESET +
+                    FG_RED + BOLD + "  TX  " + RESET +
+                    FG_CYAN + fmt_bytes(tx) + RESET))
+                row += 5
+            else:
+                frame.append(put(row, 4, DIM + "No active tunnel. Press [c] to connect." + RESET + CLR_LINE))
+                row += 2
 
-        key = stdscr.getch()
-        if key in (ord('q'), ord('Q')):
-            break
-        elif key in (ord('c'), ord('C')):
-            status_msg, status_good = "Working...", True
-            stdscr.refresh()
-            ok, msg = toggle_tunnel(config_name, config_path, up)
-            status_msg, status_good = msg, ok
-            time.sleep(0.8)
-        elif key in (ord('r'), ord('R')):
-            status_msg = ""
+            if status_msg:
+                color = FG_GREEN if status_good else FG_RED
+                frame.append(put(row, 2, color + "  " + status_msg + RESET + CLR_LINE))
 
-        up = is_up(config_name)
-        stats = get_wg_stats(config_name) if up else {}
+            # Footer
+            footer_y = rows - 2
+            frame.append(put(footer_y - 1, 0, DIM + "-" * cols + RESET))
+            keys_list = [("[c]", "connect" if not up else "disconnect"),
+                         ("[r]", "refresh"),
+                         ("[q]", "quit")]
+            footer_line = ""
+            for k, desc in keys_list:
+                footer_line += FG_YELLOW + BOLD + k + RESET + DIM + f" {desc}  " + RESET
+            frame.append(put(footer_y, 2, footer_line + CLR_LINE))
 
-def picker_wrapper(stdscr, names):
-    init_colors()
-    return pick_config(stdscr, names)
+            # Clear any leftover content below the footer.
+            frame.append(put(rows - 1, 0, CLR_DOWN))
+            write(*frame)
+            flush()
+
+            # Wait for a key, or for the next refresh tick.
+            wait = max(0.05, redraw_deadline - (time.monotonic() - last_refresh))
+            k = read_key(wait)
+            if k is None:
+                continue
+            if k[0] == 'char':
+                c = k[1].lower()
+                if c == b'q':
+                    break
+                elif c == b'c':
+                    ok, msg = toggle_tunnel(config_name, config_path, up)
+                    status_msg = "" if ok else msg
+                    status_good = ok
+                    last_refresh = 0.0
+                elif c == b'r':
+                    status_msg = ""
+    finally:
+        write(SHOW_CUR, RESET, "\n")
+        flush()
+
+# ------------------------------------------------------------------------------------
+# main
+# ------------------------------------------------------------------------------------
 
 def main():
     if not WG or not WIREGUARD:
-        print("WireGuard not found. Install it from:")
-        print("  https://www.wireguard.com/install/")
-        print("  or: winget install WireGuard.WireGuard")
+        print("WireGuard not found. Install it first:\n")
+        print("  winget install WireGuard.WireGuard")
+        print("  or download the MSI: https://www.wireguard.com/install/\n")
+        print(f"Then re-run: python {sys.argv[0]}")
         sys.exit(1)
 
     if not is_admin():
-        print("This tool requires Administrator. Run your terminal as Administrator and retry.")
+        print("This tool requires Administrator.")
+        print("Open PowerShell via Win+X -> Terminal (Admin), then re-run the command.")
         sys.exit(1)
 
     names = list_configs()
     if not names:
-        print(f"No configs found in {CONFIG_DIR}. Add *.conf files there.")
+        print(f"No configs found in {CONFIG_DIR}. Drop a *.conf file there (see configs/example.conf).")
         sys.exit(1)
+
+    enable_vt_mode()
+
+    active = [a for a in get_active_interfaces() if a in names]
 
     if len(sys.argv) > 1:
         chosen = sys.argv[1]
         if chosen not in names:
             print(f"Config '{chosen}' not found. Available: {', '.join(names)}")
             sys.exit(1)
+    elif len(active) == 1:
+        chosen = active[0]
     elif len(names) == 1:
         chosen = names[0]
     else:
-        chosen = curses.wrapper(picker_wrapper, names)
+        chosen = pick_config(names, active=frozenset(active))
         if not chosen:
             sys.exit(0)
 
     config_path = CONFIG_DIR / f"{chosen}.conf"
     try:
-        curses.wrapper(tui, chosen, config_path)
+        tui(chosen, config_path)
     except KeyboardInterrupt:
         pass
 

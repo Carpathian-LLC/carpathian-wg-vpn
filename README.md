@@ -32,7 +32,7 @@ WireGuard must already be installed on your system. If the TUI can't find it, it
 
 ---
 
-Built by [Carpathian](https://carpathian.ai). Follow us:
+Built for [Carpathian](https://carpathian.ai) Open Source.
 
 - [Threads](https://www.threads.net/@carpathianai)
 - [X](https://x.com/carpathianai)

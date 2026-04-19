@@ -70,7 +70,7 @@ def list_configs():
         return []
     return sorted(p.stem for p in CONFIG_DIR.glob("*.conf") if p.stem != "example")
 
-def pick_config(stdscr, names):
+def pick_config(stdscr, names, active=frozenset()):
     """Simple arrow-key menu. Returns selected name or None."""
     curses.curs_set(0)
     idx = 0
@@ -84,6 +84,8 @@ def pick_config(stdscr, names):
             prefix = "▶ " if i == idx else "  "
             try:
                 stdscr.addstr(2 + i, 2, prefix + n, attr)
+                if n in active:
+                    stdscr.addstr("  [active]", curses.color_pair(C_UP) | curses.A_BOLD)
             except curses.error:
                 pass
         try:
@@ -102,17 +104,22 @@ def pick_config(stdscr, names):
         elif k in (ord('q'), ord('Q')):
             return None
 
-def get_active_iface():
+def get_active_interfaces():
+    """Return the names of currently active WireGuard tunnel interfaces."""
     out, _, rc = run([WG, "show", "interfaces"])
     if rc == 0 and out.strip():
-        return out.strip().split()[0]
-    return None
+        return out.strip().split()
+    return []
 
-def is_up():
-    return get_active_iface() is not None
+def get_active_iface(config_name):
+    return config_name if config_name in get_active_interfaces() else None
 
-def get_wg_stats(config_name):
-    iface = get_active_iface()
+def is_up(config_name):
+    return get_active_iface(config_name) is not None
+
+def get_wg_stats(config_name, iface=None):
+    if iface is None:
+        iface = get_active_iface(config_name)
     stats = {
         "interface": iface or config_name,
         "public_key": "—", "listen_port": "—", "peer": "—",
@@ -246,13 +253,6 @@ def tui(stdscr, config_name, config_path):
                 stdscr.addstr("  ↑ TX  ", curses.color_pair(C_DOWN) | curses.A_BOLD)
                 stdscr.addstr(fmt_bytes(tx), curses.color_pair(C_ACCENT))
             except curses.error: pass
-            total = rx + tx
-            if total > 0:
-                rx_ratio = int((rx / total) * (bw - 10))
-                tx_ratio = (bw - 10) - rx_ratio
-                bar = "▓" * rx_ratio + "░" * tx_ratio
-                try: stdscr.addstr(row+2, 4, bar[:bw-8], curses.color_pair(C_DIM))
-                except curses.error: pass
             row += 6
         else:
             try: stdscr.addstr(row, 4, "No active tunnel. Press [c] to connect.",
@@ -282,21 +282,20 @@ def tui(stdscr, config_name, config_path):
         if key in (ord('q'), ord('Q')):
             break
         elif key in (ord('c'), ord('C')):
-            status_msg, status_good = "Working…", True
-            stdscr.refresh()
             ok, msg = toggle_tunnel(config_path, up)
-            status_msg, status_good = msg, ok
-            time.sleep(0.8)
+            status_msg = "" if ok else msg
+            status_good = ok
         elif key in (ord('r'), ord('R')):
             status_msg = ""
 
-        up = is_up()
-        stats = get_wg_stats(config_name) if up else {}
+        iface = config_name if config_name in get_active_interfaces() else None
+        up = iface is not None
+        stats = get_wg_stats(config_name, iface=iface) if up else {}
         tick += 1
 
-def picker_wrapper(stdscr, names):
+def picker_wrapper(stdscr, names, active=frozenset()):
     init_colors()
-    return pick_config(stdscr, names)
+    return pick_config(stdscr, names, active=active)
 
 def main():
     if not WG or not WG_QUICK:
@@ -318,15 +317,19 @@ def main():
         print(f"No configs found in {CONFIG_DIR}. Add *.conf files there.")
         sys.exit(1)
 
+    active = [a for a in get_active_interfaces() if a in names]
+
     if len(sys.argv) > 1:
         chosen = sys.argv[1]
         if chosen not in names:
             print(f"Config '{chosen}' not found. Available: {', '.join(names)}")
             sys.exit(1)
+    elif len(active) == 1:
+        chosen = active[0]
     elif len(names) == 1:
         chosen = names[0]
     else:
-        chosen = curses.wrapper(picker_wrapper, names)
+        chosen = curses.wrapper(picker_wrapper, names, frozenset(active))
         if not chosen:
             sys.exit(0)
 
