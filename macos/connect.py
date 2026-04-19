@@ -42,34 +42,21 @@ def find_binaries():
 WG, WG_QUICK = find_binaries()
 
 # ------------------------------------------------------------------------------------
-# Carpathian palette and curses colour pairs
+# Curses colour pairs (terminal-native; readable on light and dark backgrounds)
 # ------------------------------------------------------------------------------------
-# Brand hex: blue #1B8FF2, pink #F11C6B, green #22C55E, red #EF4444, amber #EAB308, fg #EDEDED
 
-C_HEADER, C_UP, C_DOWN, C_DIM, C_ACCENT, C_KEY, C_BORDER, C_TITLE = range(1, 9)
+C_HEADER, C_UP, C_DOWN, C_DIM, C_ACCENT, C_KEY, C_BORDER = range(1, 8)
 
 def init_colors():
     curses.start_color()
     curses.use_default_colors()
-    blue, pink, green, red, amber, fg = (
-        curses.COLOR_BLUE, curses.COLOR_MAGENTA, curses.COLOR_GREEN,
-        curses.COLOR_RED, curses.COLOR_YELLOW, curses.COLOR_WHITE,
-    )
-    if curses.can_change_color() and curses.COLORS >= 256:
-        scale = lambda r, g, b: (r*1000//255, g*1000//255, b*1000//255)
-        for idx, rgb in [(16, (0x1B, 0x8F, 0xF2)), (17, (0xF1, 0x1C, 0x6B)),
-                         (18, (0x22, 0xC5, 0x5E)), (19, (0xEF, 0x44, 0x44)),
-                         (20, (0xEA, 0xB3, 0x08)), (21, (0xED, 0xED, 0xED))]:
-            curses.init_color(idx, *scale(*rgb))
-        blue, pink, green, red, amber, fg = 16, 17, 18, 19, 20, 21
-    curses.init_pair(C_HEADER, fg,    blue)
-    curses.init_pair(C_UP,     green, -1)
-    curses.init_pair(C_DOWN,   red,   -1)
-    curses.init_pair(C_DIM,    fg,    -1)
-    curses.init_pair(C_ACCENT, blue,  -1)
-    curses.init_pair(C_KEY,    amber, -1)
-    curses.init_pair(C_BORDER, blue,  -1)
-    curses.init_pair(C_TITLE,  pink,  -1)
+    curses.init_pair(C_HEADER, curses.COLOR_WHITE,  curses.COLOR_BLUE)
+    curses.init_pair(C_UP,     curses.COLOR_GREEN,  -1)
+    curses.init_pair(C_DOWN,   curses.COLOR_RED,    -1)
+    curses.init_pair(C_DIM,    -1,                  -1)
+    curses.init_pair(C_ACCENT, curses.COLOR_CYAN,   -1)
+    curses.init_pair(C_KEY,    curses.COLOR_YELLOW, -1)
+    curses.init_pair(C_BORDER, -1,                  -1)
 
 def run(cmd):
     try:
@@ -81,7 +68,7 @@ def run(cmd):
 def list_configs():
     if not CONFIG_DIR.is_dir():
         return []
-    return sorted(p.stem for p in CONFIG_DIR.glob("*.conf"))
+    return sorted(p.stem for p in CONFIG_DIR.glob("*.conf") if p.stem != "example")
 
 def pick_config(stdscr, names):
     """Simple arrow-key menu. Returns selected name or None."""
@@ -93,7 +80,7 @@ def pick_config(stdscr, names):
         stdscr.addstr(0, 0, " CARPATHIAN · WireGuard · select config ".ljust(w),
                       curses.color_pair(C_HEADER) | curses.A_BOLD)
         for i, n in enumerate(names):
-            attr = curses.color_pair(C_ACCENT) | curses.A_BOLD if i == idx else curses.color_pair(C_DIM)
+            attr = curses.color_pair(C_ACCENT) | curses.A_BOLD if i == idx else curses.color_pair(C_DIM) | curses.A_DIM
             prefix = "▶ " if i == idx else "  "
             try:
                 stdscr.addstr(2 + i, 2, prefix + n, attr)
@@ -101,7 +88,7 @@ def pick_config(stdscr, names):
                 pass
         try:
             stdscr.addstr(h - 2, 2, "[↑/↓] move   [enter] select   [q] quit",
-                          curses.color_pair(C_DIM))
+                          curses.color_pair(C_DIM) | curses.A_DIM)
         except curses.error:
             pass
         stdscr.refresh()
@@ -186,21 +173,22 @@ def toggle_tunnel(config_path, currently_up):
 # ------------------------------------------------------------------------------------
 
 def hline(win, y, x, w, ch="─"):
-    try: win.addstr(y, x, ch * w, curses.color_pair(C_BORDER))
+    try: win.addstr(y, x, ch * w, curses.color_pair(C_BORDER) | curses.A_DIM)
     except curses.error: pass
 
 def box(win, y, x, h, w):
+    attr = curses.color_pair(C_BORDER) | curses.A_DIM
     try:
-        win.addstr(y,     x, "┌" + "─"*(w-2) + "┐", curses.color_pair(C_BORDER))
-        win.addstr(y+h-1, x, "└" + "─"*(w-2) + "┘", curses.color_pair(C_BORDER))
+        win.addstr(y,     x, "┌" + "─"*(w-2) + "┐", attr)
+        win.addstr(y+h-1, x, "└" + "─"*(w-2) + "┘", attr)
         for i in range(1, h-1):
-            win.addstr(y+i, x,     "│", curses.color_pair(C_BORDER))
-            win.addstr(y+i, x+w-1, "│", curses.color_pair(C_BORDER))
+            win.addstr(y+i, x,     "│", attr)
+            win.addstr(y+i, x+w-1, "│", attr)
     except curses.error: pass
 
 def label(win, y, x, key, val, maxw=40):
     try:
-        win.addstr(y, x, key, curses.color_pair(C_DIM))
+        win.addstr(y, x, key, curses.color_pair(C_DIM) | curses.A_DIM)
         win.addstr(y, x+len(key), truncate(str(val), maxw - len(key)),
                    curses.color_pair(C_ACCENT))
     except curses.error: pass
@@ -267,7 +255,8 @@ def tui(stdscr, config_name, config_path):
                 except curses.error: pass
             row += 6
         else:
-            try: stdscr.addstr(row, 4, "No active tunnel. Press [c] to connect.", curses.color_pair(C_DIM))
+            try: stdscr.addstr(row, 4, "No active tunnel. Press [c] to connect.",
+                               curses.color_pair(C_DIM) | curses.A_DIM)
             except curses.error: pass
             row += 2
 
@@ -283,7 +272,7 @@ def tui(stdscr, config_name, config_path):
         for k, desc in keys:
             try:
                 stdscr.addstr(footer_y, fx, k, curses.color_pair(C_KEY) | curses.A_BOLD)
-                stdscr.addstr(f" {desc}  ", curses.color_pair(C_DIM))
+                stdscr.addstr(f" {desc}  ", curses.color_pair(C_DIM) | curses.A_DIM)
                 fx += len(k) + len(desc) + 3
             except curses.error: pass
         hline(stdscr, footer_y - 1, 0, w)
@@ -310,14 +299,18 @@ def picker_wrapper(stdscr, names):
     return pick_config(stdscr, names)
 
 def main():
-    if os.geteuid() != 0:
-        print("This tool requires root. Run with: sudo python3 connect.py")
+    if not WG or not WG_QUICK:
+        print("WireGuard tools not found on this system.\n")
+        print("Install with one of:")
+        print("  Homebrew:  brew install wireguard-tools")
+        print("  MacPorts:  sudo port install wireguard-tools\n")
+        print("Don't have Homebrew? Install it first:")
+        print('  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"\n')
+        print(f"Then re-run: sudo python3 {sys.argv[0]}")
         sys.exit(1)
 
-    if not WG or not WG_QUICK:
-        print("WireGuard not found. Install via one of:")
-        print("  brew install wireguard-tools")
-        print("  sudo port install wireguard-tools")
+    if os.geteuid() != 0:
+        print(f"This tool requires root. Run with: sudo python3 {sys.argv[0]}")
         sys.exit(1)
 
     names = list_configs()

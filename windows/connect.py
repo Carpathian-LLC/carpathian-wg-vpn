@@ -76,7 +76,7 @@ def init_colors():
                          (20, (0xEA, 0xB3, 0x08)), (21, (0xED, 0xED, 0xED))]:
             curses.init_color(idx, *scale(*rgb))
         blue, pink, green, red, amber, fg = 16, 17, 18, 19, 20, 21
-    curses.init_pair(C_HEADER, fg,    blue)
+    curses.init_pair(C_HEADER, curses.COLOR_WHITE, blue)
     curses.init_pair(C_UP,     green, -1)
     curses.init_pair(C_DOWN,   red,   -1)
     curses.init_pair(C_DIM,    fg,    -1)
@@ -95,7 +95,7 @@ def run(cmd):
 def list_configs():
     if not CONFIG_DIR.is_dir():
         return []
-    return sorted(p.stem for p in CONFIG_DIR.glob("*.conf"))
+    return sorted(p.stem for p in CONFIG_DIR.glob("*.conf") if p.stem != "example")
 
 def pick_config(stdscr, names):
     curses.curs_set(0)
@@ -318,14 +318,14 @@ def picker_wrapper(stdscr, names):
     return pick_config(stdscr, names)
 
 def main():
-    if not is_admin():
-        print("This tool requires Administrator. Run your terminal as Administrator and retry.")
-        sys.exit(1)
-
     if not WG or not WIREGUARD:
         print("WireGuard not found. Install it from:")
         print("  https://www.wireguard.com/install/")
         print("  or: winget install WireGuard.WireGuard")
+        sys.exit(1)
+
+    if not is_admin():
+        print("This tool requires Administrator. Run your terminal as Administrator and retry.")
         sys.exit(1)
 
     names = list_configs()

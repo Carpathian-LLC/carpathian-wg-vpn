@@ -18,7 +18,7 @@ Drop your `.conf` files in [`../configs/`](../configs/) then:
 
 ```bash
 sudo python3 connect.py              # picker (or auto-selects if only one config)
-sudo python3 connect.py usc1         # open a specific config by name
+sudo python3 connect.py example_conf         # open a specific config by name
 ```
 
 Root is required because `wg-quick` creates a `utun` interface and modifies routes.
