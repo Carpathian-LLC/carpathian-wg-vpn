@@ -30,6 +30,10 @@ Put your WireGuard `.conf` files in [`configs/`](./configs/). The TUI auto-disco
 
 WireGuard must already be installed on your system. If the TUI can't find it, it will print the install command for your platform. See the per-platform READMEs for details.
 
+## License
+
+MIT — see [LICENSE](./LICENSE).
+
 ---
 
 Built for [Carpathian](https://carpathian.ai) Open Source.
