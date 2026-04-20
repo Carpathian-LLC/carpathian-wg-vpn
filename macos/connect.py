@@ -24,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "configs"
+WG_RUN_DIR = Path("/var/run/wireguard")
 REFRESH_HZ = 1.5
 
 # ------------------------------------------------------------------------------------
@@ -105,14 +106,33 @@ def pick_config(stdscr, names, active=frozenset()):
             return None
 
 def get_active_interfaces():
-    """Return the names of currently active WireGuard tunnel interfaces."""
+    """Return the names of currently active WireGuard tunnel interfaces (e.g. utun3)."""
     out, _, rc = run([WG, "show", "interfaces"])
     if rc == 0 and out.strip():
         return out.strip().split()
     return []
 
-def get_active_iface(config_name):
-    return config_name if config_name in get_active_interfaces() else None
+def read_name_file(config_name):
+    """wg-quick on macOS stores the utun name picked for a config in /var/run/wireguard/<name>.name."""
+    try:
+        return (WG_RUN_DIR / f"{config_name}.name").read_text().strip() or None
+    except OSError:
+        return None
+
+def get_active_iface(config_name, active=None):
+    """Resolve config_name to the live kernel interface (utunN on macOS), or None."""
+    if active is None:
+        active = get_active_interfaces()
+    if config_name in active:
+        return config_name
+    mapped = read_name_file(config_name)
+    return mapped if mapped and mapped in active else None
+
+def get_active_configs(names, active=None):
+    """Return the subset of config names whose tunnels are currently up."""
+    if active is None:
+        active = get_active_interfaces()
+    return [n for n in names if get_active_iface(n, active=active) is not None]
 
 def is_up(config_name):
     return get_active_iface(config_name) is not None
@@ -236,7 +256,8 @@ def tui(stdscr, config_name, config_path):
             box(stdscr, row, 2, 7, bw)
             try: stdscr.addstr(row, 4, " Connection ", curses.color_pair(C_ACCENT) | curses.A_BOLD)
             except curses.error: pass
-            label(stdscr, row+1, 4, "Interface  : ", config_name, bw-6)
+            iface_label = config_name if stats.get("interface") in (None, config_name) else f"{config_name} ({stats['interface']})"
+            label(stdscr, row+1, 4, "Interface  : ", iface_label, bw-6)
             label(stdscr, row+2, 4, "Endpoint   : ", stats.get("endpoint","—"), bw-6)
             label(stdscr, row+3, 4, "Allowed IPs: ", stats.get("allowed_ips","—"), bw-6)
             label(stdscr, row+4, 4, "Handshake  : ", stats.get("latest_handshake") or "—", bw-6)
@@ -288,7 +309,7 @@ def tui(stdscr, config_name, config_path):
         elif key in (ord('r'), ord('R')):
             status_msg = ""
 
-        iface = config_name if config_name in get_active_interfaces() else None
+        iface = get_active_iface(config_name)
         up = iface is not None
         stats = get_wg_stats(config_name, iface=iface) if up else {}
         tick += 1
@@ -317,7 +338,7 @@ def main():
         print(f"No configs found in {CONFIG_DIR}. Add *.conf files there.")
         sys.exit(1)
 
-    active = [a for a in get_active_interfaces() if a in names]
+    active = get_active_configs(names)
 
     if len(sys.argv) > 1:
         chosen = sys.argv[1]
