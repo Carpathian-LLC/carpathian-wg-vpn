@@ -1,9 +1,10 @@
 # carpathian-wg-vpn
 
-A lightweight Python utility and terminal UI for WireGuard tunnels, built for systems that can't run the official WireGuard app. Supports macOS and Windows.
+A lightweight Python utility and terminal UI for WireGuard tunnels, built for systems that can't run the official WireGuard app. Supports Linux, macOS, and Windows.
 
 ## Platforms
 
+- [Linux](./linux/) — uses `wireguard-tools` from apt, dnf, pacman, or zypper
 - [macOS](./macos/) — uses Homebrew or MacPorts `wireguard-tools`
 - [Windows](./windows/) — uses the official WireGuard installer
 
@@ -11,7 +12,8 @@ A lightweight Python utility and terminal UI for WireGuard tunnels, built for sy
 
 ```
 carpathian-wg-vpn/
-├── configs/       # drop your *.conf files here (shared by both platforms)
+├── configs/       # drop your *.conf files here (shared by all platforms)
+├── linux/         # sudo python3 connect.py [config_name]
 ├── macos/         # sudo python3 connect.py [config_name]
 └── windows/       # python connect.py [config_name]   (Administrator)
 ```
